@@ -32,6 +32,9 @@ const maxRows = ref<number>(1000);
 
 const numRows = ref<number>(0);
 
+
+const headerIndex = ref<number>(0);
+
 const hasData = computed(() => spreadData.value.length > 0);
 const hasFileName = computed(() => fileName.value !== '');
 
@@ -87,8 +90,35 @@ async function upload(event: any) {
 
 function handleRowCellClick(target: HTMLElement) {
   const par = target.parentElement;
-  console.log('Row cell clicked:', par?.getAttribute('data-p-index'));
+  if (par instanceof HTMLElement) {
+    const ri = par.getAttribute('data-p-index');
+    if (ri) {
+      const index = parseInt(ri, 10);
+      if (!isNaN(index)) {
+        
+        if (index >= 0 && index < spreadData.value.length) {
+          if (index === headerIndex.value) {
+            // reset header keys
+            headerIndex.value = 0;
+            editedHeaderKeys.value = [...headerKeys.value];
+          } else {
+            const row = spreadData.value[index];
+            const newKeys = Object.values(row).filter(s => typeof s === 'string').map(toSnakeCase).filter(s => s.length > 0);
+            if (newKeys.length > 0 && newKeys.length === editedHeaderKeys.value.length) {
+              editedHeaderKeys.value = newKeys;
+              headerIndex.value = index;
+            }
+          }
+        }
+      }
+    }
+  }
 }
+
+function handleHeaderClick(target: HTMLElement) {
+  console.log(target)
+}
+
 
 
 function handleTableClick(event: PointerEvent) {
@@ -97,12 +127,23 @@ function handleTableClick(event: PointerEvent) {
   }
   const par = event.target.parentElement;
   const tgName = event.target.tagName.toLowerCase();
-  const useParent = par instanceof HTMLElement && tgName === 'div';
-  const refTgName = useParent ? par?.tagName.toLocaleLowerCase() : tgName;
-  const refEl = useParent ? par : event.target;
+  const useParent = par instanceof HTMLElement && ['div', 'span'].includes(tgName);
+  
+  let refTgName = useParent ? par?.tagName.toLocaleLowerCase() : tgName;
+  let refEl = useParent ? par : event.target;
+  if (tgName === 'span' && refTgName === 'div') {
+    const p2 = refEl.parentElement;
+    if (p2 instanceof HTMLElement) {
+      refEl = p2;
+      refTgName = p2.tagName.toLowerCase();
+    }
+  }
   switch (refTgName) {
     case 'td':
       handleRowCellClick(event.target);
+      break;
+    case 'th':
+      handleHeaderClick(refEl);
       break;
   }
 }
@@ -110,7 +151,10 @@ function handleTableClick(event: PointerEvent) {
 function assignRowClass(row: FieldValue) {
   const { _num } = row;
   const cls = _num % 2 === 0 ? 'row-even' : 'row-odd';
-  return [cls, ['row-' + _num]];
+  const index = _num - 1;
+  const belowCls = index >=  headerIndex.value ? 'data-row' : 'meta-row';
+  const isHeaderCls = index === headerIndex.value && index > 0 ? 'header-row' : 'normal-row';
+  return [cls, `row-${_num}`, belowCls, isHeaderCls];
 }
 
 function updateHeaderKey(event: any, index: number) {
@@ -152,7 +196,7 @@ function simplifyIntlLetters(str: string): string {
 
 
 function toSnakeCase(str: string): string {
-  return simplifyIntlLetters(str).trim().replace(/([^a-z0-9]+)/gi, '_');
+  return simplifyIntlLetters(str.toLowerCase()).trim().replace(/([^a-z0-9]+)/g, '_');
 }
 
 
@@ -201,12 +245,24 @@ function downloadAsJson() {
   if (!hasData.value) {
     return;
   }
-  const data = spreadData.value.map(row => {
+
+  const numKeys = headerKeys.value.length;
+  const numEditedKeys = editedHeaderKeys.value.length;
+  // ensure the # of edited keys are at least as many as the original keys
+  if (numEditedKeys < numKeys) {
+    for (let i = 0; i < numKeys; i++) {
+      const key = headerKeys.value[i];
+      if (i >= numEditedKeys) {
+        editedHeaderKeys.value.push(key);
+      }
+    }
+  }
+  const startIndex = headerIndex.value > 0 ? headerIndex.value + 1 : 0;
+  const data = spreadData.value.slice(startIndex).map(row => {
     const newRow: Map<string, any> = new Map();
     for (let i = 0; i < headerKeys.value.length; i++) {
       const key = headerKeys.value[i];
-      const editedKey = i < editedHeaderKeys.value.length ? editedHeaderKeys.value[i] : key;
-      const refKey = editedKey.length > 0 ? editedKey : key;
+      const refKey = editedHeaderKeys.value[i];
       newRow.set(refKey, row[key]);
     }
     return Object.fromEntries(newRow.entries());
@@ -220,8 +276,18 @@ function downloadAsJson() {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  URL.revokeObjectURL(url); 
+  URL.revokeObjectURL(url);
 }
+
+const headerName = (index: number) => {
+  return editedHeaderKeys.value[index] || headerKeys.value[index];
+};
+
+const tableClasses = () => {
+  const numCols = headerKeys.value.length + 1;
+  const widthCls = numCols < 4 ? 'narrow' : numCols < 6 ? 'compact' : 'stretchable';
+  return [`num-cols-${numCols}`, widthCls];
+};
 
 // Call loadCurrentData in the onMounted lifecycle hook
 onMounted(() => {
@@ -254,9 +320,9 @@ onMounted(() => {
       </div>
     </div>
     <Button label="Download as JSON" icon="pi pi-download" iconPos="left" @click="downloadAsJson" />
-    <DataTable v-if="hasData" :value="spreadData" :showGridlines="true" tableStyle="min-width: 50rem; width: 100%;" @click="handleTableClick" :row-hover="true" :row-class="assignRowClass">
-      <Column field="_num" header="#" />
-      <Column v-for="(hk, index) in headerKeys" :key="index" :field="hk" :header="hk" />
+    <DataTable v-if="hasData" :value="spreadData" :showGridlines="true" tableStyle="min-width: 50rem; width: 100%;" @click="handleTableClick" :row-hover="true" :row-class="assignRowClass" :class="tableClasses()">
+      <Column field="_num" header="#" class="row-num" />
+      <Column v-for="(hk, index) in headerKeys" :key="index" :field="hk" :header="headerName(index)" />
     </DataTable>
   </section>
 
@@ -275,5 +341,36 @@ dl.data-info {
   flex-direction: row;
 }
 
+
+
+.compact .p-datatable-table th,
+.compact .p-datatable-table td {
+  max-width: 20rem;
+}
+
+.stetchable .p-datatable-table th,
+.stetchable .p-datatable-table td {
+  max-width: 15rem;
+}
+
+.p-datatable-table thead th div {
+  position: relative;
+  overflow-x: auto;
+}
+
+.p-datatable-table tbody tr.header-row td {
+  font-style: italic;
+  text-decoration:wavy underline;
+}
+
+.p-datatable-table tbody tr.meta-row {
+  display: none;
+}
+
+.p-datatable-table tbody tr.data-row td.row-num {
+  max-width: 3rem;
+  font-size: 0.8em;
+  font-weight: bold;
+}
 
 </style>
